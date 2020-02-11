@@ -1,0 +1,17 @@
+[package]
+name = "monitoring-app"
+version = "0.1.0"
+authors = ["Grzegorz <grzegorz.bartoszek@thaumatec.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+pms-7003 = "0.2.0"
+rumqtt = "0.31.0"
+linux-embedded-hal = "0.3.0"
+structopt = "0.3.9"
+chrono = { version = "0.4.10", features = ["serde"] }
+serde_json = "1.0.47"
+serde = "1.0.104"
+serde_derive = "1.0.104"
