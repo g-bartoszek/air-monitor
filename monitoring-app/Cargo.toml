@@ -7,7 +7,7 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pms-7003 = "0.2.0"
+pms-7003 = { path = "../../rust/pms-7003"}
 rumqtt = "0.31.0"
 linux-embedded-hal = "0.3.0"
 structopt = "0.3.9"

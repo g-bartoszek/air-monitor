@@ -34,11 +34,15 @@ fn main() {
     let opts = Opts::from_args();
 
     let mut mqtt_client = mqtt_connection(&opts);
+    println!("Broker connected");
 
     let device = linux_embedded_hal::Serial::open(&opts.device).unwrap();
     let mut sensor = pms_7003::Pms7003Sensor::new(device);
-    sensor.active().unwrap();
-    sensor.active().unwrap();
+    println!("Device connected");
+
+    let _ = sensor.active();
+    let _ = sensor.sleep();
+
     loop {
         let status = get_air_quality_status(&mut sensor, &opts).unwrap();
 
@@ -77,8 +81,6 @@ fn main() {
 
         println!("Published: {:?}", status);
 
-        sensor.sleep().unwrap();
-
         std::thread::sleep(Duration::from_secs(opts.interval as u64));
     }
 }
@@ -94,14 +96,25 @@ struct AitQualityStatus {
 fn get_air_quality_status(
     sensor: &mut Pms7003Sensor<Serial>,
     opts: &Opts,
-) -> Result<AitQualityStatus, &'static str> {
+) -> Result<AitQualityStatus, pms_7003::Error> {
     println!("Waking sensor");
-    sensor.wake()?;
-
-    for _ in 0..10 {
-       let _ = sensor.read();
+    loop {
+        sensor.wake()?;
+        if sensor.read().is_ok() {
+            break;
+        }
     }
 
+    println!("Warming up");
+    let warmup_start = std::time::Instant::now();
+    loop {
+        let _ = sensor.read();
+        if ( std::time::Instant::now() - warmup_start ) > Duration::from_secs(30) {
+            break
+        }
+    }
+
+    println!("Reading measurements");
     let mut measurements = std::vec::Vec::<OutputFrame>::new();
 
     while measurements.len() < opts.measurements {
@@ -110,12 +123,12 @@ fn get_air_quality_status(
                 println!("{:?}", measurement);
                 measurements.push(measurement);
             }
-            Err(e) => print!("{}", e),
+            Err(e) => print!("{:?}", e),
         }
     }
 
     println!("Going to sleep");
-    sensor.sleep()?;
+    let _ = sensor.sleep();
 
     Ok(status_from_measurements(&measurements))
 }
