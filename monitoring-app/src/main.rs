@@ -1,3 +1,4 @@
+use clokwerk::TimeUnits;
 use linux_embedded_hal::Serial;
 use pms_7003::{OutputFrame, Pms7003Sensor};
 use rumqtt::{MqttClient, MqttOptions, QoS, ReconnectOptions};
@@ -43,46 +44,14 @@ fn main() {
     let _ = sensor.active();
     let _ = sensor.sleep();
 
-    loop {
+    let mut scheduler = clokwerk::Scheduler::new();
+
+    scheduler.every(opts.interval.seconds()).run(move || {
         let status = get_air_quality_status(&mut sensor, &opts).unwrap();
+        publish_status(&mut mqtt_client, &status, &opts.topic);
+    });
 
-        mqtt_client
-            .publish(
-                format!("{}/status", opts.topic),
-                QoS::AtLeastOnce,
-                true,
-                serde_json::to_string_pretty(&status).unwrap(),
-            )
-            .unwrap();
-        mqtt_client
-            .publish(
-                format!("{}/pm1_0", opts.topic),
-                QoS::AtLeastOnce,
-                true,
-                format!("{}", status.pm_1_0),
-            )
-            .unwrap();
-        mqtt_client
-            .publish(
-                format!("{}/pm2_5", opts.topic),
-                QoS::AtLeastOnce,
-                true,
-                format!("{}", status.pm_2_5),
-            )
-            .unwrap();
-        mqtt_client
-            .publish(
-                format!("{}/pm10", opts.topic),
-                QoS::AtLeastOnce,
-                true,
-                format!("{}", status.pm_10),
-            )
-            .unwrap();
-
-        println!("Published: {:?}", status);
-
-        std::thread::sleep(Duration::from_secs(opts.interval as u64));
-    }
+    scheduler.watch_thread(Duration::from_secs(10));
 }
 
 #[derive(Debug, Serialize)]
@@ -109,8 +78,8 @@ fn get_air_quality_status(
     let warmup_start = std::time::Instant::now();
     loop {
         let _ = sensor.read();
-        if ( std::time::Instant::now() - warmup_start ) > Duration::from_secs(30) {
-            break
+        if (std::time::Instant::now() - warmup_start) > Duration::from_secs(30) {
+            break;
         }
     }
 
@@ -131,6 +100,43 @@ fn get_air_quality_status(
     let _ = sensor.sleep();
 
     Ok(status_from_measurements(&measurements))
+}
+
+fn publish_status(mqtt_client: &mut MqttClient, status: &AitQualityStatus, topic: &str) {
+    mqtt_client
+        .publish(
+            format!("{}/status", topic),
+            QoS::AtLeastOnce,
+            true,
+            serde_json::to_string_pretty(status).unwrap(),
+        )
+        .unwrap();
+    mqtt_client
+        .publish(
+            format!("{}/pm1_0", topic),
+            QoS::AtLeastOnce,
+            true,
+            format!("{}", status.pm_1_0),
+        )
+        .unwrap();
+    mqtt_client
+        .publish(
+            format!("{}/pm2_5", topic),
+            QoS::AtLeastOnce,
+            true,
+            format!("{}", status.pm_2_5),
+        )
+        .unwrap();
+    mqtt_client
+        .publish(
+            format!("{}/pm10", topic),
+            QoS::AtLeastOnce,
+            true,
+            format!("{}", status.pm_10),
+        )
+        .unwrap();
+
+    println!("Published: {:?}", status);
 }
 
 fn status_from_measurements(measurements: &[OutputFrame]) -> AitQualityStatus {
