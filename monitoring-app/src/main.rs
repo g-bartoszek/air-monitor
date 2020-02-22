@@ -42,7 +42,9 @@ fn main() {
     println!("Device connected");
 
     let _ = sensor.active();
-    let _ = sensor.sleep();
+
+    let status = get_air_quality_status(&mut sensor, &opts).unwrap();
+    publish_status(&mut mqtt_client, &status, &opts.topic);
 
     let mut scheduler = clokwerk::Scheduler::new();
 
@@ -51,7 +53,10 @@ fn main() {
         publish_status(&mut mqtt_client, &status, &opts.topic);
     });
 
-    scheduler.watch_thread(Duration::from_secs(10));
+    loop {
+        scheduler.run_pending();
+        std::thread::sleep(Duration::from_secs(10));
+    }
 }
 
 #[derive(Debug, Serialize)]
