@@ -1,4 +1,3 @@
-use clokwerk::TimeUnits;
 use linux_embedded_hal::Serial;
 use pms_7003::{OutputFrame, Pms7003Sensor};
 use rumqtt::{MqttClient, MqttOptions, QoS, ReconnectOptions};
@@ -6,6 +5,7 @@ use serde_derive::Serialize;
 use std::path::PathBuf;
 use std::time::Duration;
 use structopt::StructOpt;
+use tokio::macros::support::Future;
 
 /// Queries air quality sensor and publishes results using MQTT
 #[derive(StructOpt)]
@@ -30,11 +30,11 @@ struct Opts {
     #[structopt(short = "m", long = "measurements", default_value = "10")]
     measurements: usize,
 }
-
-fn main() {
+#[tokio::main]
+async fn main() {
     let opts = Opts::from_args();
 
-    let mut mqtt_client = mqtt_connection(&opts);
+    let mut mqtt_client = std::sync::Arc::new(std::sync::Mutex::new(mqtt_connection(&opts)));
     println!("Broker connected");
 
     let device = linux_embedded_hal::Serial::open(&opts.device).unwrap();
@@ -43,19 +43,93 @@ fn main() {
 
     let _ = sensor.active();
 
-    let status = get_air_quality_status(&mut sensor, &opts).unwrap();
-    publish_status(&mut mqtt_client, &status, &opts.topic);
+    let mut interval = tokio::time::interval(Duration::from_secs(opts.interval.into()));
 
-    let mut scheduler = clokwerk::Scheduler::new();
-
-    scheduler.every(opts.interval.seconds()).run(move || {
-        let status = get_air_quality_status(&mut sensor, &opts).unwrap();
-        publish_status(&mut mqtt_client, &status, &opts.topic);
-    });
+    let i2c_bus = linux_embedded_hal::I2cdev::new("/dev/i2c-1").unwrap();
+    let mut bme280 = bme280::BME280::new_primary(i2c_bus, linux_embedded_hal::Delay);
+    bme280.init().unwrap();
 
     loop {
-        scheduler.run_pending();
-        std::thread::sleep(Duration::from_secs(10));
+        interval.tick().await;
+
+        let pollution_task = tokio::spawn(pollution_task(
+            sensor,
+            opts.measurements,
+            mqtt_client.clone(),
+            opts.topic.clone(),
+        ));
+
+        let temperature_task = tokio::spawn(temperature_task(
+            bme280,
+            mqtt_client.clone(),
+            opts.topic.clone(),
+        ));
+
+        sensor = pollution_task.await.unwrap();
+        bme280 = temperature_task.await.unwrap();
+    }
+}
+
+fn pollution_task(
+    mut sensor: Pms7003Sensor<Serial>,
+    num_of_measurements: usize,
+    mut mqtt_client: std::sync::Arc<std::sync::Mutex<MqttClient>>,
+    topic: String,
+) -> impl Future<Output = Pms7003Sensor<Serial>> {
+    async move {
+        let status = get_air_quality_status(&mut sensor, num_of_measurements).unwrap();
+        publish_status(&mut mqtt_client.lock().unwrap(), &status, &topic);
+        sensor
+    }
+}
+
+fn temperature_task(
+    mut bme280: bme280::BME280<linux_embedded_hal::I2cdev, linux_embedded_hal::Delay>,
+    mut mqtt_client: std::sync::Arc<std::sync::Mutex<MqttClient>>,
+    topic: String,
+) -> impl Future<Output = bme280::BME280<linux_embedded_hal::I2cdev, linux_embedded_hal::Delay>> {
+    async move {
+        let measurement = bme280.measure().unwrap();
+
+        mqtt_client
+            .lock()
+            .unwrap()
+            .publish(
+                format!("{}/humidity", topic),
+                QoS::AtLeastOnce,
+                true,
+                format!("{}", measurement.humidity),
+            )
+            .unwrap();
+
+        mqtt_client
+            .lock()
+            .unwrap()
+            .publish(
+                format!("{}/temperature", topic),
+                QoS::AtLeastOnce,
+                true,
+                format!("{}", measurement.temperature),
+            )
+            .unwrap();
+
+        mqtt_client
+            .lock()
+            .unwrap()
+            .publish(
+                format!("{}/pressure", topic),
+                QoS::AtLeastOnce,
+                true,
+                format!("{}", measurement.pressure),
+            )
+            .unwrap();
+
+        println!(
+            "Published: humidity: {} pressure: {} temperature: {}",
+            measurement.humidity, measurement.pressure, measurement.temperature
+        );
+
+        bme280
     }
 }
 
@@ -69,7 +143,7 @@ struct AitQualityStatus {
 
 fn get_air_quality_status(
     sensor: &mut Pms7003Sensor<Serial>,
-    opts: &Opts,
+    num_of_measurements: usize,
 ) -> Result<AitQualityStatus, pms_7003::Error> {
     println!("Waking sensor");
     loop {
@@ -91,7 +165,7 @@ fn get_air_quality_status(
     println!("Reading measurements");
     let mut measurements = std::vec::Vec::<OutputFrame>::new();
 
-    while measurements.len() < opts.measurements {
+    while measurements.len() < num_of_measurements {
         match sensor.read() {
             Ok(measurement) => {
                 println!("{:?}", measurement);
