@@ -34,12 +34,12 @@ struct Opts {
 async fn main() {
     let opts = Opts::from_args();
 
-    let mut mqtt_client = std::sync::Arc::new(std::sync::Mutex::new(mqtt_connection(&opts)));
-    println!("Broker connected");
+    let mqtt_client = std::sync::Arc::new(std::sync::Mutex::new(mqtt_connection(&opts)));
+    println!("MQTT client connected");
 
     let device = linux_embedded_hal::Serial::open(&opts.device).unwrap();
     let mut sensor = pms_7003::Pms7003Sensor::new(device);
-    println!("Device connected");
+    println!("Pms7003 connected");
 
     let _ = sensor.active();
 
@@ -48,6 +48,7 @@ async fn main() {
     let i2c_bus = linux_embedded_hal::I2cdev::new("/dev/i2c-1").unwrap();
     let mut bme280 = bme280::BME280::new_primary(i2c_bus, linux_embedded_hal::Delay);
     bme280.init().unwrap();
+    println!("Bme280 connected");
 
     loop {
         interval.tick().await;
@@ -70,12 +71,15 @@ async fn main() {
     }
 }
 
+type Pms7003 = Pms7003Sensor<Serial>;
+type Bme = bme280::BME280<linux_embedded_hal::I2cdev, linux_embedded_hal::Delay>;
+
 fn pollution_task(
-    mut sensor: Pms7003Sensor<Serial>,
+    mut sensor: Pms7003,
     num_of_measurements: usize,
-    mut mqtt_client: std::sync::Arc<std::sync::Mutex<MqttClient>>,
+    mqtt_client: std::sync::Arc<std::sync::Mutex<MqttClient>>,
     topic: String,
-) -> impl Future<Output = Pms7003Sensor<Serial>> {
+) -> impl Future<Output = Pms7003> {
     async move {
         let status = get_air_quality_status(&mut sensor, num_of_measurements).unwrap();
         publish_status(&mut mqtt_client.lock().unwrap(), &status, &topic);
@@ -84,45 +88,29 @@ fn pollution_task(
 }
 
 fn temperature_task(
-    mut bme280: bme280::BME280<linux_embedded_hal::I2cdev, linux_embedded_hal::Delay>,
-    mut mqtt_client: std::sync::Arc<std::sync::Mutex<MqttClient>>,
+    mut bme280: Bme,
+    mqtt_client: std::sync::Arc<std::sync::Mutex<MqttClient>>,
     topic: String,
-) -> impl Future<Output = bme280::BME280<linux_embedded_hal::I2cdev, linux_embedded_hal::Delay>> {
+) -> impl Future<Output = Bme> {
     async move {
         let measurement = bme280.measure().unwrap();
 
-        mqtt_client
-            .lock()
-            .unwrap()
-            .publish(
-                format!("{}/humidity", topic),
-                QoS::AtLeastOnce,
-                true,
-                format!("{}", measurement.humidity),
-            )
-            .unwrap();
-
-        mqtt_client
-            .lock()
-            .unwrap()
-            .publish(
-                format!("{}/temperature", topic),
-                QoS::AtLeastOnce,
-                true,
-                format!("{}", measurement.temperature),
-            )
-            .unwrap();
-
-        mqtt_client
-            .lock()
-            .unwrap()
-            .publish(
-                format!("{}/pressure", topic),
-                QoS::AtLeastOnce,
-                true,
-                format!("{}", measurement.pressure),
-            )
-            .unwrap();
+        let mut client_lock = mqtt_client.lock().unwrap();
+        publish(
+            &mut client_lock,
+            &format!("{}/humidity", topic),
+            &format!("{}", measurement.humidity),
+        );
+        publish(
+            &mut client_lock,
+            &format!("{}/temperature", topic),
+            &format!("{}", measurement.temperature),
+        );
+        publish(
+            &mut client_lock,
+            &format!("{}/pressure", topic),
+            &format!("{}", measurement.pressure),
+        );
 
         println!(
             "Published: humidity: {} pressure: {} temperature: {}",
@@ -182,40 +170,34 @@ fn get_air_quality_status(
 }
 
 fn publish_status(mqtt_client: &mut MqttClient, status: &AitQualityStatus, topic: &str) {
-    mqtt_client
-        .publish(
-            format!("{}/status", topic),
-            QoS::AtLeastOnce,
-            true,
-            serde_json::to_string_pretty(status).unwrap(),
-        )
-        .unwrap();
-    mqtt_client
-        .publish(
-            format!("{}/pm1_0", topic),
-            QoS::AtLeastOnce,
-            true,
-            format!("{}", status.pm_1_0),
-        )
-        .unwrap();
-    mqtt_client
-        .publish(
-            format!("{}/pm2_5", topic),
-            QoS::AtLeastOnce,
-            true,
-            format!("{}", status.pm_2_5),
-        )
-        .unwrap();
-    mqtt_client
-        .publish(
-            format!("{}/pm10", topic),
-            QoS::AtLeastOnce,
-            true,
-            format!("{}", status.pm_10),
-        )
-        .unwrap();
+    publish(
+        mqtt_client,
+        &format!("{}/status", topic),
+        &serde_json::to_string_pretty(status).unwrap(),
+    );
+    publish(
+        mqtt_client,
+        &format!("{}/pm10", topic),
+        &format!("{}", status.pm_10),
+    );
+    publish(
+        mqtt_client,
+        &format!("{}/pm1_0", topic),
+        &format!("{}", status.pm_1_0),
+    );
+    publish(
+        mqtt_client,
+        &format!("{}/pm2_5", topic),
+        &format!("{}", status.pm_2_5),
+    );
 
     println!("Published: {:?}", status);
+}
+
+fn publish(client: &mut MqttClient, topic: &str, payload: &str) {
+    client
+        .publish(topic, QoS::AtLeastOnce, true, payload)
+        .unwrap();
 }
 
 fn status_from_measurements(measurements: &[OutputFrame]) -> AitQualityStatus {
