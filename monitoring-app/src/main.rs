@@ -99,17 +99,17 @@ fn temperature_task(
         publish(
             &mut client_lock,
             &format!("{}/humidity", topic),
-            &format!("{}", measurement.humidity),
+            &format!("{:.2}%", measurement.humidity),
         );
         publish(
             &mut client_lock,
             &format!("{}/temperature", topic),
-            &format!("{}", measurement.temperature),
+            &format!("{:.2}°", measurement.temperature),
         );
         publish(
             &mut client_lock,
             &format!("{}/pressure", topic),
-            &format!("{}", measurement.pressure),
+            &format!("{:.2}", measurement.pressure),
         );
 
         println!(
@@ -178,17 +178,17 @@ fn publish_status(mqtt_client: &mut MqttClient, status: &AitQualityStatus, topic
     publish(
         mqtt_client,
         &format!("{}/pm10", topic),
-        &format!("{}", status.pm_10),
+        &format!("{} ug/m^3", status.pm_10),
     );
     publish(
         mqtt_client,
         &format!("{}/pm1_0", topic),
-        &format!("{}", status.pm_1_0),
+        &format!("{} ug/m^3", status.pm_1_0),
     );
     publish(
         mqtt_client,
         &format!("{}/pm2_5", topic),
-        &format!("{}", status.pm_2_5),
+        &format!("{} ug/m^3", status.pm_2_5),
     );
 
     println!("Published: {:?}", status);
